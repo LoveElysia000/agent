@@ -40,9 +40,11 @@ pip install langchain langchain-community langchain-openai requests python-doten
    - 创建账户并获取API密钥
 
 3. **配置环境变量**
-   创建 `.env` 文件，填入您的API密钥：
-   ```bash
-   cat > .env << 'EOF'
+   **使用 cp 命令复制模板**
+      ```bash
+      cp .env.example .env
+      ```
+    然后编辑 `.env` 文件，填入您的实际API密钥。
 # 天气预报Agent配置文件
 
 # OpenWeatherMap API密钥
