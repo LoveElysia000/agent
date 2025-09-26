@@ -58,7 +58,7 @@ def interactive_mode(agent: WeatherAgent):
     print("\n请输入城市名称查询天气 (输入'quit'退出):")
     
     while True:
-        user_input = input("\n🌤️  请输入城市: ").strip()
+        user_input = input("\n🌤️  Ein: ").strip()
         
         if user_input.lower() in ['quit', 'exit', 'q']:
             print("👋 感谢使用天气预报Agent，再见！")

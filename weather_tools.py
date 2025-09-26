@@ -1,6 +1,7 @@
 import os
 import requests
-from typing import Dict, Any
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Tuple
 from langchain.tools import tool
 from dotenv import load_dotenv
 
@@ -431,26 +432,39 @@ def get_weather_forecast(city: str, days: int = 3) -> Dict[str, Any]:
         response.raise_for_status()
         data = response.json()
         
-        # 每天选取三个主要时间段：上午(9:00)、下午(15:00)、晚上(21:00)
-        key_times = {'09:00:00', '15:00:00', '21:00:00'}
-        
+        # 获取所有可用的预报数据，不再限制特定时间点
         forecast_by_date = {}
         for item in data["list"]:
             date = item["dt_txt"].split(" ")[0]  # 提取日期
             time = item["dt_txt"].split(" ")[1]  # 提取时间
             
-            if time in key_times:
-                if date not in forecast_by_date:
-                    forecast_by_date[date] = []
-                
-                forecast_by_date[date].append({
-                    "datetime": item["dt_txt"],
-                    "time_label": "上午" if time == '09:00:00' else "下午" if time == '15:00:00' else "晚上",
-                    "temperature": item["main"]["temp"],
-                    "description": item["weather"][0]["description"],
-                    "humidity": item["main"]["humidity"],
-                    "wind_speed": item["wind"]["speed"]
-                })
+            # 为每个时间点分配标签
+            hour = int(time.split(":")[0])
+            if 6 <= hour < 9:
+                time_label = "清晨"
+            elif 9 <= hour < 12:
+                time_label = "上午"
+            elif 12 <= hour < 15:
+                time_label = "中午"
+            elif 15 <= hour < 18:
+                time_label = "下午"
+            elif 18 <= hour < 21:
+                time_label = "傍晚"
+            else:
+                time_label = "晚上"
+            
+            if date not in forecast_by_date:
+                forecast_by_date[date] = []
+            
+            forecast_by_date[date].append({
+                "datetime": item["dt_txt"],
+                "time_label": time_label,
+                "temperature": item["main"]["temp"],
+                "description": item["weather"][0]["description"],
+                "humidity": item["main"]["humidity"],
+                "wind_speed": item["wind"]["speed"],
+                "pressure": item["main"]["pressure"]
+            })
         
         # 转换为列表格式，限制天数
         forecast = []
@@ -470,6 +484,180 @@ def get_weather_forecast(city: str, days: int = 3) -> Dict[str, Any]:
     except KeyError as e:
         return {"error": f"无效的响应格式: {str(e)}"}
 
+# 法定假日数据库 - 2025年固定日期
+FIXED_HOLIDAYS_2025 = {
+    "元旦": ("2025-01-01", "2025-01-01"),
+    "春节": ("2025-01-29", "2025-02-04"),  # 待确认，通常是除夕到初六
+    "清明节": ("2025-04-04", "2025-04-06"),
+    "劳动节": ("2025-05-01", "2025-05-05"),
+    "端午节": ("2025-05-31", "2025-06-02"),
+    "中秋节": ("2025-10-01", "2025-10-03"),  # 与国庆节重叠
+    "国庆节": ("2025-10-01", "2025-10-07"),
+}
+
+# 法定假日别名映射
+HOLIDAY_ALIASES = {
+    "元旦": ["new year", "新年"],
+    "春节": ["春节", "春节假期", "过年", "农历新年"],
+    "清明节": ["清明节", "清明"],
+    "劳动节": ["劳动节", "五一", "五一假期"],
+    "端午节": ["端午节", "端午", "龙舟节"],
+    "中秋节": ["中秋节", "中秋", "月饼节"],
+    "国庆节": ["国庆节", "国庆", "十一", "国庆假期"],
+}
+
+@tool
+def check_holiday_date_range(holiday_name: str) -> Dict[str, Any]:
+    """查询指定法定假日的准确日期范围，并检查预报数据是否覆盖全假期
+    
+    Args:
+        holiday_name: 假日名称，支持中文常用称呼
+        
+    Returns:
+        包含开始日期、结束日期、天数和数据可用性的字典
+    """
+    # 查找对应的标准假日名称
+    normalized_holiday = None
+    for holiday, aliases in HOLIDAY_ALIASES.items():
+        if holiday_name in aliases or holiday_name == holiday:
+            normalized_holiday = holiday
+            break
+    
+    if not normalized_holiday:
+        return {
+            "error": f"未找到法定假日 '{holiday_name}'，支持的假日包括：元旦、春节、清明节、劳动节、端午节、中秋节、国庆节"
+        }
+    
+    if normalized_holiday in FIXED_HOLIDAYS_2025:
+        start_date, end_date = FIXED_HOLIDAYS_2025[normalized_holiday]
+        
+        # 计算天数
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        days_count = (end_dt - start_dt).days + 1
+        
+        # 检查当前日期，判断预报数据是否能覆盖整个假期
+        today = datetime.now()
+        forecast_end_date = today + timedelta(days=5)  # OpenWeatherMap一般提供5-7天预报
+        forecast_start_date = today - timedelta(days=1)  # 通常也能查询过去1天
+        forecast_end_date_str = forecast_end_date.strftime("%Y-%m-%d")
+        forecast_start_date_str = forecast_start_date.strftime("%Y-%m-%d")
+        
+        data_coverage = "无法覆盖全假期"
+        warning = ""
+        
+        if start_date > forecast_end_date_str:
+            data_coverage = "远未来假期"
+            warning = f"注意：{normalized_holiday} ({start_date}) 超出了天气预报的覆盖范围"
+        elif end_date > forecast_end_date_str:
+            data_coverage = "部分覆盖"
+            warning = f"注意：{normalized_holiday} 的部分日期超出了天气预报的覆盖范围"
+        elif start_date < forecast_start_date_str:
+            data_coverage = "过去假期"
+            warning = f"注意：{normalized_holiday} 已经结束，天气预报主要提供未来天气"
+        else:
+            data_coverage = "完全覆盖"
+        
+        return {
+            "holiday": normalized_holiday,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days": days_count,
+            "year": "2025",
+            "data_coverage": data_coverage,
+            "warning": warning
+        }
+    
+    return {"error": f"法定假日 '{normalized_holiday}' 日期信息缺失"}
+
+@tool
+def get_holiday_weather(city: str, holiday_name: str) -> Dict[str, Any]:
+    """获取指定城市在法定假日期间的天气预报
+    
+    Args:
+        city: 城市名称
+        holiday_name: 假日名称
+        
+    Returns:
+        包含假日信息和对应天气预报的字典
+    """
+    # 先查询假日日期范围
+    holiday_info_resp = check_holiday_date_range.run({"holiday_name": holiday_name})
+    if "error" in holiday_info_resp:
+        return holiday_info_resp
+    
+    # 获取天气预报 - 使用较大的天数确保覆盖可能的假期
+    weather_data_resp = get_weather_forecast.run({"city": city, "days": 7})  # 获取最大可用预报
+    if "error" in weather_data_resp:
+        return weather_data_resp
+    
+    # 过滤出假日期间的天气预报
+    holiday_forecast = []
+    start_date = holiday_info_resp["start_date"]
+    end_date = holiday_info_resp["end_date"]
+    
+    for forecast_item in weather_data_resp["forecast"]:
+        forecast_date = forecast_item["datetime"].split(" ")[0]
+        if start_date <= forecast_date <= end_date:
+            holiday_forecast.append(forecast_item)
+    
+    return {
+        "holiday_info": holiday_info_resp,
+        "city": weather_data_resp["city"],
+        "holiday_forecast": holiday_forecast,
+        "available_days": len(set(item["datetime"].split()[0] for item in holiday_forecast)),  # 实际可用的不同日期数量
+        "total_holiday_days": holiday_info_resp["days"]
+    }
+
+@tool
+def get_specific_day_weather(city: str, day_desc: str) -> Dict[str, Any]:
+    """获取指定城市在特定日期的天气预报
+    
+    Args:
+        city: 城市名称
+        day_desc: 日期描述（如'明天'、'后天'）
+        
+    Returns:
+        包含特定日期天气预报的字典
+    """
+    from datetime import datetime, timedelta
+    
+    # 计算目标日期
+    today = datetime.now()
+    if day_desc == "明天":
+        target_date = today + timedelta(days=1)
+    elif day_desc == "后天":
+        target_date = today + timedelta(days=2)
+    elif day_desc == "大后天":
+        target_date = today + timedelta(days=3)
+    else:
+        return {"error": f"不支持的时间描述：{day_desc}，支持：明天、后天、大后天"}
+    
+    target_date_str = target_date.strftime("%Y-%m-%d")
+    
+    # 计算需要的预报天数
+    days_needed = (target_date - today).days + 1  # 包含当天
+    
+    # 获取天气预报
+    weather_data_resp = get_weather_forecast.run({"city": city, "days": days_needed})
+    if "error" in weather_data_resp:
+        return weather_data_resp
+    
+    # 过滤出目标日期的天气预报
+    target_day_forecast = []
+    for forecast_item in weather_data_resp["forecast"]:
+        forecast_date = forecast_item["datetime"].split(" ")[0]
+        if forecast_date == target_date_str:
+            target_day_forecast.append(forecast_item)
+    
+    return {
+        "city": weather_data_resp["city"],
+        "target_date": target_date_str,
+        "day_description": day_desc,
+        "forecast": target_day_forecast,
+        "forecast_found": len(target_day_forecast) > 0
+    }
+
 def get_weather_tools():
     """返回天气工具列表"""
-    return [get_current_weather, get_weather_forecast]
+    return [get_current_weather, get_weather_forecast, check_holiday_date_range, get_holiday_weather, get_specific_day_weather]
