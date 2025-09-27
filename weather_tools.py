@@ -612,16 +612,16 @@ def get_holiday_weather(city: str, holiday_name: str) -> Dict[str, Any]:
 @tool
 def get_specific_day_weather(city: str, day_desc: str) -> Dict[str, Any]:
     """获取指定城市在特定日期的天气预报
-    
+
     Args:
         city: 城市名称
         day_desc: 日期描述（如'明天'、'后天'）
-        
+
     Returns:
         包含特定日期天气预报的字典
     """
     from datetime import datetime, timedelta
-    
+
     # 计算目标日期
     today = datetime.now()
     if day_desc == "明天":
@@ -632,24 +632,24 @@ def get_specific_day_weather(city: str, day_desc: str) -> Dict[str, Any]:
         target_date = today + timedelta(days=3)
     else:
         return {"error": f"不支持的时间描述：{day_desc}，支持：明天、后天、大后天"}
-    
+
     target_date_str = target_date.strftime("%Y-%m-%d")
-    
+
     # 计算需要的预报天数
     days_needed = (target_date - today).days + 1  # 包含当天
-    
+
     # 获取天气预报
     weather_data_resp = get_weather_forecast.run({"city": city, "days": days_needed})
     if "error" in weather_data_resp:
         return weather_data_resp
-    
+
     # 过滤出目标日期的天气预报
     target_day_forecast = []
     for forecast_item in weather_data_resp["forecast"]:
         forecast_date = forecast_item["datetime"].split(" ")[0]
         if forecast_date == target_date_str:
             target_day_forecast.append(forecast_item)
-    
+
     return {
         "city": weather_data_resp["city"],
         "target_date": target_date_str,
@@ -658,6 +658,435 @@ def get_specific_day_weather(city: str, day_desc: str) -> Dict[str, Any]:
         "forecast_found": len(target_day_forecast) > 0
     }
 
+@tool
+def get_hourly_weather_forecast(city: str, hours: int) -> Dict[str, Any]:
+    """获取指定城市未来指定小时数的天气预报，以1小时为间隔
+
+    Args:
+        city: 城市名称
+        hours: 小时数（如6表示未来6小时，最大不超过48小时）
+
+    Returns:
+        包含每小时天气预报的字典
+    """
+    if not API_KEY:
+        return {"error": "OpenWeatherMap API key not configured"}
+
+    # 限制小时数不超过48小时（OpenWeatherMap API的限制）
+    hours = min(max(1, hours), 48)
+
+    try:
+        english_city = translate_city_name(city)
+        url = f"{BASE_URL}/forecast?q={english_city}&appid={API_KEY}&units=metric&lang=zh_cn"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        # 获取当前时间
+        current_time = datetime.now()
+
+        # 获取预测数据
+        hourly_forecast = []
+        for item in data["list"]:
+            forecast_time = datetime.strptime(item["dt_txt"], "%Y-%m-%d %H:%M:%S")
+            time_diff = (forecast_time - current_time).total_seconds() / 3600  # 转换为小时
+
+            # 只获取未来指定小时内的数据
+            if 0 <= time_diff <= hours:
+                hourly_forecast.append({
+                    "datetime": item["dt_txt"],
+                    "hours_from_now": round(time_diff, 1),
+                    "temperature": item["main"]["temp"],
+                    "feels_like": item["main"]["feels_like"],
+                    "description": item["weather"][0]["description"],
+                    "humidity": item["main"]["humidity"],
+                    "wind_speed": item["wind"]["speed"],
+                    "pressure": item["main"]["pressure"]
+                })
+
+        return {
+            "city": data["city"]["name"],
+            "hours": hours,
+            "hourly_forecast": hourly_forecast,
+            "available_hours": len(hourly_forecast)
+        }
+    except requests.exceptions.RequestException as e:
+        if "404" in str(e):
+            return {"error": f"城市 '{city}' 未找到，请检查城市名称是否正确"}
+        else:
+            return {"error": f"天气预报API请求失败: {str(e)}"}
+    except KeyError as e:
+        return {"error": f"无效的响应格式: {str(e)}"}
+
+@tool
+def parse_and_predict_weather(city: str, date_description: str) -> Dict[str, Any]:
+    """根据日期描述解析并选择最适合的天气查询工具
+
+    Args:
+        city: 城市名称
+        date_description: 日期描述（如"未来6小时"、"明天"、"2025-10-01"）
+
+    Returns:
+        包含解析结果和推荐工具的信息
+    """
+    from datetime import datetime, timedelta
+
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+
+    # 解析日期描述
+    if "小时" in date_description:
+        # 小时间隔查询
+        try:
+            hours = int(''.join(filter(str.isdigit, date_description)))
+            hours = min(max(1, hours), 48)
+            return {
+                "type": "hourly",
+                "hours": hours,
+                "recommended_tool": "get_hourly_weather_forecast",
+                "description": f"未来{hours}小时天气"
+            }
+        except:
+            return {"error": f"无法解析小时数: {date_description}"}
+
+    elif "天" in date_description and not date_description.startswith("星期"):
+        # 天数查询
+        try:
+            days = int(''.join(filter(str.isdigit, date_description)))
+            if days <= 5:  # 在预报范围内
+                return {
+                    "type": "days_forecast",
+                    "days": days,
+                    "recommended_tool": "get_weather_forecast",
+                    "description": f"未来{days}天天气"
+                }
+            else:  # 超出预报范围
+                target_date = (today + timedelta(days=days)).strftime("%Y-%m-%d")
+                return {
+                    "type": "prediction",
+                    "days": days,
+                    "target_date": target_date,
+                    "recommended_tool": "predict_weather_trend",
+                    "description": f"基于趋势预测{days}天后天气"
+                }
+        except:
+            return {"error": f"无法解析天数: {date_description}"}
+
+    elif date_description in ["明天", "后天", "大后天"]:
+        # 特定日期查询
+        day_desc_map = {"明天": 1, "后天": 2, "大后天": 3}
+        days = day_desc_map.get(date_description, 1)
+        return {
+            "type": "specific_day",
+            "days": days,
+            "description": date_description,
+            "recommended_tool": "get_specific_day_weather"
+        }
+
+    elif "202" in date_description and "-" in date_description:
+        # 可能是一个具体的日期
+        try:
+            target_dt = datetime.strptime(date_description, "%Y-%m-%d")
+            days_diff = (target_dt - today).days
+
+            if days_diff <= 0:
+                return {"error": f"日期 '{date_description}' 是过去日期"}
+            elif days_diff <= 5:
+                return {
+                    "type": "specific_date_forecast",
+                    "target_date": date_description,
+                    "days_ahead": days_diff,
+                    "recommended_tool": "get_weather_forecast"
+                }
+            else:
+                return {
+                    "type": "prediction",
+                    "target_date": date_description,
+                    "days_ahead": days_diff,
+                    "recommended_tool": "predict_weather_trend",
+                    "description": f"基于趋势预测{date_description}的天气"
+                }
+        except ValueError:
+            pass
+
+    return {"error": f"无法理解的日期描述: {date_description}"}
+
+@tool
+def predict_weather_trend(city: str, target_date: str) -> Dict[str, Any]:
+    """根据历史天气数据预测指定日期的天气趋势，包括天气类型概率预测
+
+    Args:
+        city: 城市名称
+        target_date: 目标日期 (格式: YYYY-MM-DD)
+
+    Returns:
+        包含预测结果、天气概率和置信度的字典
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        # 解析目标日期
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        today = datetime.now()
+
+        # 计算天数差
+        days_diff = (target_dt - today).days
+
+        if days_diff <= 0:
+            return {"error": f"目标日期 '{target_date}' 是过去或今天的日期，无法预测"}
+
+        # 获取可用的天气预报数据（最多5天）
+        forecast_data = get_weather_forecast.invoke({"city": city, "days": min(days_diff, 5)})
+        if "error" in forecast_data:
+            return forecast_data
+
+        # 获取历史天气数据（最近几天）
+        current_weather = get_current_weather.invoke({"city": city})
+        if "error" in current_weather:
+            return current_weather
+
+        # 分析天气趋势
+        trend_analysis = analyze_weather_trend(forecast_data, current_weather, days_diff)
+
+        # 计算预测置信度
+        confidence_level = calculate_confidence_level(days_diff, len(forecast_data.get("forecast", [])))
+
+        return {
+            "city": city,
+            "target_date": target_date,
+            "days_ahead": days_diff,
+            "prediction": trend_analysis,
+            "confidence": confidence_level,
+            "data_source": "基于最近天气趋势、季节模式和概率分析",
+            "limitation": "预测和概率仅供参考，实际天气可能有所不同"
+        }
+
+    except ValueError:
+        return {"error": f"无效的日期格式: {target_date}，请使用 YYYY-MM-DD 格式"}
+    except Exception as e:
+        return {"error": f"预测过程中出错: {str(e)}"}
+
+def calculate_confidence_level(days_ahead: int, data_points: int) -> str:
+    """根据天数和数据点计算预测置信度"""
+    if data_points <= 2:
+        base_confidence = 0.3
+    elif data_points <= 5:
+        base_confidence = 0.6
+    else:
+        base_confidence = 0.8
+
+    # 根据天数调整置信度
+    if days_ahead <= 3:
+        day_factor = 0.9
+    elif days_ahead <= 7:
+        day_factor = 0.7
+    elif days_ahead <= 15:
+        day_factor = 0.5
+    else:
+        day_factor = 0.3
+
+    final_confidence = base_confidence * day_factor
+
+    if final_confidence >= 0.7:
+        return "高"
+    elif final_confidence >= 0.5:
+        return "中等"
+    else:
+        return "低"
+
+def analyze_weather_trend(forecast_data: Dict[str, Any], current_weather: Dict[str, Any], days_ahead: int) -> Dict[str, Any]:
+    """分析天气趋势并生成预测，包括天气类型概率"""
+    # 提取温度趋势
+    temperatures = []
+    weather_types = []
+
+    if "forecast" in forecast_data:
+        for item in forecast_data["forecast"]:
+            temperatures.append(item["temperature"])
+            weather_types.append(item["description"])
+
+    # 添加当前天气数据
+    if "temperature" in current_weather:
+        temperatures.insert(0, current_weather["temperature"])
+    if "description" in current_weather:
+        weather_types.insert(0, current_weather["description"])
+
+    # 温度趋势预测
+    predicted_temp = predict_temperature(temperatures, days_ahead)
+
+    # 天气类型概率预测
+    weather_probabilities = predict_weather_probabilities(weather_types, days_ahead)
+
+    # 基于季节和位置的预测
+    month = datetime.now().month
+    season = get_season(month)
+
+    return {
+        "predicted_temperature": predicted_temp,
+        "temperature_trend": "稳定" if len(set(temperatures)) <= 2 else "变化",
+        "season": season,
+        "typical_weather": get_typical_weather(season, city=forecast_data.get("city", "")),
+        "weather_probabilities": weather_probabilities,
+        "recommendation": get_seasonal_recommendation(season, predicted_temp)
+    }
+
+def predict_temperature(temperatures: List[float], days_ahead: int) -> float:
+    """预测未来的温度"""
+    if len(temperatures) == 0:
+        return None
+
+    # 简单线性趋势预测
+    if len(temperatures) >= 2:
+        temp_changes = []
+        for i in range(1, len(temperatures)):
+            temp_changes.append(temperatures[i] - temperatures[i-1])
+
+        avg_change = sum(temp_changes) / len(temp_changes) if temp_changes else 0
+        predicted_temp = temperatures[-1] + avg_change * (days_ahead - len(temperatures) + 1)
+    else:
+        predicted_temp = temperatures[-1]
+
+    return round(predicted_temp, 1) if predicted_temp else None
+
+def predict_weather_probabilities(weather_descriptions: List[str], days_ahead: int) -> List[Dict[str, Any]]:
+    """预测未来天气类型的概率，按概率从高到低排序"""
+    if len(weather_descriptions) == 0:
+        return []
+
+    # 天气类型分类映射
+    weather_categories = categorize_weather(weather_descriptions)
+
+    # 计算各个类型的频率（基础概率）
+    category_counts = {}
+    for category in weather_categories:
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    # 计算基础概率
+    total = len(weather_categories)
+    base_probabilities = {category: count/total for category, count in category_counts.items()}
+
+    # 考虑季节因素调整概率
+    month = datetime.now().month
+    season = get_season(month)
+    adjusted_probabilities = adjust_probabilities_by_season(base_probabilities, season)
+
+    # 考虑天数差影响（越远不确定性越大）
+    final_probabilities = adjust_probabilities_by_days(adjusted_probabilities, days_ahead)
+
+    # 转换为有序列表，按概率从高到低排序
+    sorted_probabilities = [
+        {"weather": category, "probability": round(prob * 100, 1), "icon": get_weather_icon("description", category)}
+        for category, prob in sorted(final_probabilities.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    return sorted_probabilities
+
+def categorize_weather(descriptions: List[str]) -> List[str]:
+    """将天气描述分类为主要的天气类型"""
+    categories = []
+    for desc in descriptions:
+        if any(word in desc for word in ["晴", "clear", "sunny"]):
+            categories.append("晴天")
+        elif any(word in desc for word in ["多云", "cloud", "阴"]):
+            categories.append("多云")
+        elif any(word in desc for word in ["雨", "rain", "降水"]):
+            categories.append("雨天")
+        elif any(word in desc for word in ["雪", "snow"]):
+            categories.append("雪天")
+        elif any(word in desc for word in ["雷", "thunder"]):
+            categories.append("雷雨")
+        elif any(word in desc for word in ["雾", "fog"]):
+            categories.append("雾天")
+        else:
+            categories.append("其他")
+    return categories
+
+def adjust_probabilities_by_season(probabilities: Dict[str, float], season: str) -> Dict[str, float]:
+    """根据季节调整天气概率"""
+    # 季节权重（基于经验）
+    season_weights = {
+        "夏季": {"晴天": 1.2, "多云": 0.8, "雨天": 1.5, "雷雨": 1.3, "雪天": 0.1, "雾天": 0.5},
+        "冬季": {"晴天": 0.8, "多云": 1.0, "雨天": 0.3, "雷雨": 0.1, "雪天": 1.8, "雾天": 1.2},
+        "春季": {"晴天": 1.0, "多云": 1.2, "雨天": 1.1, "雷雨": 0.8, "雪天": 0.4, "雾天": 0.9},
+        "秋季": {"晴天": 1.1, "多云": 1.0, "雨天": 0.9, "雷雨": 0.5, "雪天": 0.2, "雾天": 1.0}
+    }
+
+    weights = season_weights.get(season, {})
+    adjusted = {}
+
+    for weather, prob in probabilities.items():
+        weight = weights.get(weather, 1.0)
+        adjusted[weather] = prob * weight
+
+    # 重新标准化概率
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {k: v/total for k, v in adjusted.items()}
+
+    return adjusted
+
+def adjust_probabilities_by_days(probabilities: Dict[str, float], days_ahead: int) -> Dict[str, float]:
+    """根据天数调整不确定性"""
+    if days_ahead <= 3:
+        return probabilities  # 短期预测，不确定性较小
+
+    # 随着天数增加，天气类型预测的不确定性增加
+    uncertainty_factor = min(1.0 + (days_ahead - 3) * 0.1, 2.0)
+
+    adjusted = {}
+    for weather, prob in probabilities.items():
+        # 对不太可能发生的天气类型增加更多的不确定性
+        if prob < 0.2:
+            adjusted[weather] = prob * uncertainty_factor * 1.5
+        else:
+            adjusted[weather] = prob * uncertainty_factor
+
+    # 重新标准化
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {k: v/total for k, v in adjusted.items()}
+
+    return adjusted
+
+def get_season(month: int) -> str:
+    """根据月份获取季节"""
+    if month in [12, 1, 2]:
+        return "冬季"
+    elif month in [3, 4, 5]:
+        return "春季"
+    elif month in [6, 7, 8]:
+        return "夏季"
+    else:
+        return "秋季"
+
+def get_typical_weather(season: str, city: str = "") -> str:
+    """获取典型天气状况"""
+    typical_weather = {
+        "冬季": "晴朗或阴天，可能有降雪",
+        "春季": "多变，可能有降雨",
+        "夏季": "炎热，可能有雷阵雨",
+        "秋季": "凉爽，天气稳定"
+    }
+    return typical_weather.get(season, "天气多变")
+
+def get_seasonal_recommendation(season: str, temperature: float = None) -> str:
+    """获取季节性建议"""
+    if temperature is None:
+        return "建议关注最新天气预报"
+
+    if season == "冬季":
+        if temperature < 0:
+            return "天气寒冷，注意保暖，可能有结冰"
+        else:
+            return "天气较冷，建议穿着保暖衣物"
+    elif season == "夏季":
+        if temperature > 30:
+            return "天气炎热，注意防暑降温"
+        else:
+            return "天气温暖，适合户外活动"
+    else:
+        return "天气宜人，适合各种活动"
+
 def get_weather_tools():
     """返回天气工具列表"""
-    return [get_current_weather, get_weather_forecast, check_holiday_date_range, get_holiday_weather, get_specific_day_weather]
+    return [get_current_weather, get_weather_forecast, check_holiday_date_range, get_holiday_weather, get_specific_day_weather, get_hourly_weather_forecast, predict_weather_trend, parse_and_predict_weather]

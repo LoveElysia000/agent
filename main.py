@@ -55,18 +55,24 @@ def ask_weather_advice(agent: WeatherAgent, question: str, city: str) -> str:
 
 def interactive_mode(agent: WeatherAgent):
     """交互模式"""
-    print("\n请输入城市名称查询天气 (输入'quit'退出):")
-    
+    print("\n请输入天气查询内容 (输入'quit'退出):")
+    print("支持查询类型：")
+    print("  • 当前天气 (如: 北京天气)")
+    print("  • 未来小时天气 (如: 北京未来6小时天气)")
+    print("  • 特定日期天气 (如: 北京明天天气)")
+    print("  • 多天天气预报 (如: 上海未来3天天气)")
+    print("  • 假日天气查询 (如: 国庆节北京天气)")
+
     while True:
-        user_input = input("\n🌤️  Ein: ").strip()
-        
+        user_input = input("\n🌤️  请输入: ").strip()
+
         if user_input.lower() in ['quit', 'exit', 'q']:
             print("👋 感谢使用天气预报Agent，再见！")
             break
-        
+
         if not user_input:
             continue
-        
+
         # 处理用户查询
         try:
             response = agent.query(user_input)
