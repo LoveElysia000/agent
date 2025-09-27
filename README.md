@@ -24,7 +24,7 @@
 ### 安装依赖
 
 ```bash
-pip install langchain langchain-community langchain-openai requests python-dotenv openai httpx
+pip install langchain langchain-community langchain-openai requests python-dotenv openai
 ```
 
 ### API密钥配置
