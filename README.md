@@ -25,6 +25,9 @@
 
 ```bash
 pip install langchain langchain-community langchain-openai requests python-dotenv openai
+
+#如果发生版本冲突，需要升级langchain相关包
+pip install --upgrade langchain-community langchain-openai
 ```
 
 ### API密钥配置
