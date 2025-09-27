@@ -895,27 +895,49 @@ def calculate_confidence_level(days_ahead: int, data_points: int) -> str:
         return "低"
 
 def analyze_weather_trend(forecast_data: Dict[str, Any], current_weather: Dict[str, Any], days_ahead: int) -> Dict[str, Any]:
-    """分析天气趋势并生成预测，包括天气类型概率"""
-    # 提取温度趋势
+    """分析天气趋势并生成预测，包括天气类型概率和具体天气描述"""
+    # 提取温度趋势和天气数据
     temperatures = []
-    weather_types = []
+    weather_descriptions = []
+    humidities = []
+    wind_speeds = []
 
     if "forecast" in forecast_data:
         for item in forecast_data["forecast"]:
             temperatures.append(item["temperature"])
-            weather_types.append(item["description"])
+            weather_descriptions.append(item["description"])
+            humidities.append(item["humidity"])
+            wind_speeds.append(item["wind_speed"])
 
     # 添加当前天气数据
     if "temperature" in current_weather:
         temperatures.insert(0, current_weather["temperature"])
     if "description" in current_weather:
-        weather_types.insert(0, current_weather["description"])
+        weather_descriptions.insert(0, current_weather["description"])
+    if "humidity" in current_weather:
+        humidities.insert(0, current_weather["humidity"])
+    if "wind_speed" in current_weather:
+        wind_speeds.insert(0, current_weather["wind_speed"])
 
     # 温度趋势预测
     predicted_temp = predict_temperature(temperatures, days_ahead)
 
+    # 湿度预测
+    predicted_humidity = predict_humidity(humidities, days_ahead)
+
+    # 风速预测
+    predicted_wind_speed = predict_wind_speed(wind_speeds, days_ahead)
+
     # 天气类型概率预测
-    weather_probabilities = predict_weather_probabilities(weather_types, days_ahead)
+    weather_probabilities = predict_weather_probabilities(weather_descriptions, days_ahead)
+
+    # 预测具体天气状况
+    predicted_weather = predict_detailed_weather(weather_descriptions, predicted_temp, predicted_humidity, wind_speeds, days_ahead)
+
+    # 为每种天气类型预测独立的温度和条件
+    weather_type_predictions = predict_conditions_for_weather_types(
+        weather_descriptions, temperatures, humidities, wind_speeds, days_ahead, weather_probabilities
+    )
 
     # 基于季节和位置的预测
     month = datetime.now().month
@@ -923,12 +945,319 @@ def analyze_weather_trend(forecast_data: Dict[str, Any], current_weather: Dict[s
 
     return {
         "predicted_temperature": predicted_temp,
+        "predicted_humidity": predicted_humidity,
+        "predicted_wind_speed": predicted_wind_speed,
+        "predicted_weather_description": predicted_weather,
         "temperature_trend": "稳定" if len(set(temperatures)) <= 2 else "变化",
         "season": season,
         "typical_weather": get_typical_weather(season, city=forecast_data.get("city", "")),
         "weather_probabilities": weather_probabilities,
+        "weather_type_predictions": weather_type_predictions,  # 新增：每种天气类型的预测
         "recommendation": get_seasonal_recommendation(season, predicted_temp)
     }
+
+def predict_humidity(humidities: List[float], days_ahead: int) -> float:
+    """预测未来的湿度"""
+    if len(humidities) == 0:
+        return None
+
+    # 使用最近的湿度值，考虑季节性变化
+    if len(humidities) >= 2:
+        avg_humidity = sum(humidities) / len(humidities)
+    else:
+        avg_humidity = humidities[-1]
+
+    # 根据季节微调
+    month = datetime.now().month
+    season = get_season(month)
+
+    # 不同季节的湿度调整
+    season_adjustment = {
+        "夏季": 0.95,  # 夏季湿度可能略高
+        "冬季": 1.05,  # 冬季湿度可能略低
+        "春季": 1.0,
+        "秋季": 1.0
+    }
+
+    return round(avg_humidity * season_adjustment.get(season, 1.0), 1)
+
+def predict_wind_speed(wind_speeds: List[float], days_ahead: int) -> float:
+    """预测未来的风速"""
+    if len(wind_speeds) == 0:
+        return None
+
+    # 使用平均风速
+    if len(wind_speeds) >= 3:
+        recent_winds = wind_speeds[-3:]  # 取最近3个风速
+        avg_wind = sum(recent_winds) / len(recent_winds)
+    else:
+        avg_wind = sum(wind_speeds) / len(wind_speeds)
+
+    return round(avg_wind, 1)
+
+def predict_detailed_weather(weather_descriptions: List[str], temperature: float, humidity: float, wind_speeds: List[float], days_ahead: int) -> str:
+    """生成详细的天气状况描述"""
+    if not weather_descriptions:
+        return "无法获取详细的天气状况"
+
+    # 分析最常见天气类型
+    from collections import Counter
+    category_counts = Counter(categorize_weather(weather_descriptions))
+
+    if category_counts:
+        most_common = category_counts.most_common(1)[0][0]
+    else:
+        most_common = "多云"  # 默认值
+
+    # 根据天气类型生成描述
+    weather_descriptions_map = {
+        "晴天": generate_sunny_description(temperature, humidity, wind_speeds),
+        "多云": generate_cloudy_description(temperature, humidity, wind_speeds),
+        "雨天": generate_rainy_description(temperature, humidity, wind_speeds),
+        "雪天": generate_snowy_description(temperature, humidity, wind_speeds),
+        "雷雨": generate_thunderstorm_description(temperature, humidity, wind_speeds),
+        "雾天": generate_foggy_description(temperature, humidity, wind_speeds)
+    }
+
+    return weather_descriptions_map.get(most_common, generate_general_description(temperature, humidity, wind_speeds))
+
+def generate_sunny_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成晴天描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if temperature >= 30:
+        return "晴朗炎热，适合防晒和室内活动"
+    elif temperature >= 25:
+        return f"晴朗温暖，微风{avg_wind}米/秒，适合户外活动"
+    else:
+        return f"晴朗凉爽，风力{avg_wind}米/秒，适宜外出"
+
+def generate_cloudy_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成多云描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if humidity > 80:
+        return f"多云闷热，湿度较高，有短时小雨可能"
+    elif temperature >= 25:
+        return f"多云天气，温度适中，风力{avg_wind}米/秒"
+    else:
+        return f"多云凉爽，适宜各种活动"
+
+def generate_rainy_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成雨天描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if temperature > 25:
+        return f"阵雨或雷阵雨，温度较高，建议携带雨具，风力{avg_wind}米/秒"
+    else:
+        return f"降雨天气，温度适中，建议穿戴防水衣物，风力{avg_wind}米/秒"
+
+def generate_snowy_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成雪天描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if temperature <= -5:
+        return f"降雪天气，寒冷，道路可能结冰，风力{avg_wind}米/秒"
+    else:
+        return f"降雪或雨夹雪，温度较低，注意防滑，风力{avg_wind}米/秒"
+
+def generate_thunderstorm_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成雷雨描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if avg_wind > 8:
+        return f"雷雨伴有大风，建议避免外出，注意安全"
+    else:
+        return f"雷阵雨天气，可能有短时强降水"
+
+def generate_foggy_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成雾天描述"""
+    return "有雾或轻雾，能见度较低，出行注意安全"
+
+def generate_general_description(temperature: float, humidity: float, wind_speeds: List[float]) -> str:
+    """生成一般描述"""
+    avg_wind = sum(wind_speeds) / len(wind_speeds) if wind_speeds else 0
+
+    if temperature >= 30:
+        return f"天气炎热，湿度{humidity}%，建议适当降温"
+    elif temperature <= 10:
+        return f"天气较冷，风力{avg_wind}米/秒，注意保暖"
+    else:
+        return f"天气舒适，适合各种户外活动"
+
+def predict_conditions_for_weather_types(weather_descriptions: List[str], temperatures: List[float],
+                                       humidities: List[float], wind_speeds: List[float],
+                                       days_ahead: int, weather_probabilities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """为每种可能的天气类型预测独立的温度和条件"""
+    if not weather_probabilities:
+        return []
+
+    weather_type_predictions = []
+    month = datetime.now().month
+    season = get_season(month)
+
+    for prob_data in weather_probabilities:
+        weather_type = prob_data["weather"]
+        probability = prob_data["probability"] / 100.0  # 转换为小数
+
+        # 根据天气类型调整温度预测
+        predicted_temp = adjust_temperature_for_weather_type(
+            predict_temperature(temperatures, days_ahead), weather_type, season, probability
+        )
+
+        # 预测湿度和风速
+        predicted_humidity = adjust_humidity_for_weather_type(
+            predict_humidity(humidities, days_ahead), weather_type, season
+        )
+
+        predicted_wind_speed = adjust_wind_speed_for_weather_type(
+            predict_wind_speed(wind_speeds, days_ahead), weather_type, season
+        )
+
+        # 生成特定天气类型的描述
+        weather_description = generate_weather_specific_description(
+            weather_type, predicted_temp, predicted_humidity, predicted_wind_speed
+        )
+
+        # 生成建议
+        suggestion = generate_weather_specific_suggestion(
+            weather_type, predicted_temp, predicted_humidity, predicted_wind_speed
+        )
+
+        weather_type_predictions.append({
+            "weather_type": weather_type,
+            "probability": prob_data["probability"],
+            "icon": prob_data["icon"],
+            "predicted_temperature": predicted_temp,
+            "predicted_humidity": predicted_humidity,
+            "predicted_wind_speed": predicted_wind_speed,
+            "weather_description": weather_description,
+            "suggestion": suggestion,
+            "typical_conditions": get_typical_conditions_by_weather_type(weather_type, season)
+        })
+
+    return weather_type_predictions
+
+def adjust_temperature_for_weather_type(base_temp: float, weather_type: str, season: str, probability: float) -> float:
+    """根据天气类型调整温度预测"""
+    if base_temp is None:
+        return None
+
+    # 不同天气类型对温度的影响
+    weather_adjustments = {
+        "晴天": 1.0,  # 晴天通常温度稍高
+        "多云": -0.5,  # 多云可能温度略低
+        "雨天": -1.5,  # 雨天温度会降低
+        "雪天": -3.0,  # 雪天温度显著降低
+        "雷雨": -1.0,  # 雷雨伴随降温
+        "雾天": -0.5,  # 雾天温度稍低
+        "其他": 0.0
+    }
+
+    adjustment = weather_adjustments.get(weather_type, 0.0)
+    # 考虑概率权重，高概率的天气类型调整幅度更大
+    adjustment *= (0.5 + probability * 0.5)  # 在0.5-1.0之间调整
+
+    return round(base_temp + adjustment, 1)
+
+def adjust_humidity_for_weather_type(base_humidity: float, weather_type: str, season: str) -> float:
+    """根据天气类型调整湿度预测"""
+    if base_humidity is None:
+        return None
+
+    # 不同天气类型的湿度特征
+    humidity_multipliers = {
+        "雨天": 1.2,   # 雨天湿度高
+        "雷雨": 1.3,   # 雷雨湿度更高
+        "雾天": 1.4,   # 雾天湿度很高
+        "多云": 1.1,   # 多云可能湿度稍高
+        "雪天": 0.9,   # 雪天湿度可能较低
+        "晴天": 0.8,   # 晴天湿度通常较低
+        "其他": 1.0
+    }
+
+    multiplier = humidity_multipliers.get(weather_type, 1.0)
+    return round(base_humidity * multiplier, 1)
+
+def adjust_wind_speed_for_weather_type(base_wind_speed: float, weather_type: str, season: str) -> float:
+    """根据天气类型调整风速预测"""
+    if base_wind_speed is None:
+        return None
+
+    # 不同天气类型的风速特征
+    wind_speed_multipliers = {
+        "雷雨": 1.5,   # 雷雨风速较大
+        "雨天": 1.2,   # 雨天可能有风
+        "雪天": 0.8,   # 雪天风速可能较小
+        "雾天": 0.5,   # 雾天风速小
+        "晴天": 1.0,   # 晴天气候适宜
+        "多云": 1.1,   # 多云常见有风
+        "其他": 1.0
+    }
+
+    multiplier = wind_speed_multipliers.get(weather_type, 1.0)
+    return round(base_wind_speed * multiplier, 1)
+
+def generate_weather_specific_description(weather_type: str, temperature: float, humidity: float, wind_speed: float) -> str:
+    """生成特定天气类型的详细描述"""
+    descriptions = {
+        "晴天": f"晴朗天气，温度{temperature}度，风力{wind_speed}米/秒，湿度{humidity}%",
+        "多云": f"多云天气，温度{temperature}度，风力{wind_speed}米/秒，湿度{humidity}%",
+        "雨天": f"降雨天气，温度{temperature}度，风力{wind_speed}米/秒，湿度{humidity}%较高",
+        "雪天": f"降雪天气，温度{temperature}度较低，风力{wind_speed}米/秒，湿度{humidity}%",
+        "雷雨": f"雷阵雨天气，温度{temperature}度，风力{wind_speed}米/秒可能较强",
+        "雾天": f"有雾天气，温度{temperature}度，风力{wind_speed}米/秒较小，能见度低",
+        "其他": f"特殊天气，温度{temperature}度，风力{wind_speed}米/秒，湿度{humidity}%"
+    }
+
+    return descriptions.get(weather_type, f"{weather_type}天气，温度{temperature}度，风力{wind_speed}米/秒，湿度{humidity}%")
+
+def generate_weather_specific_suggestion(weather_type: str, temperature: float, humidity: float, wind_speed: float) -> str:
+    """生成特定天气类型的建议"""
+    suggestions = {
+        "晴天": "晴天适合户外活动，注意防晒和补水",
+        "多云": "多云天气适宜出行，可适当安排户外活动",
+        "雨天": "建议携带雨具，注意地面湿滑",
+        "雪天": "注意保暖和防滑，避免户外活动",
+        "雷雨": "雷雨天气避免外出，注意安全",
+        "雾天": "雾天出行注意安全，避免高速驾驶",
+        "其他": "根据天气情况合理安排活动"
+    }
+
+    return suggestions.get(weather_type, "请根据具体天气情况安排活动")
+
+def get_typical_conditions_by_weather_type(weather_type: str, season: str) -> str:
+    """根据天气类型和季节获取典型条件"""
+    typical_conditions = {
+        "晴天": {
+            "夏季": "炎热干燥，阳光强烈",
+            "冬季": "寒冷但晴朗，紫外线较强",
+            "春季": "温暖舒适，适宜户外",
+            "秋季": "凉爽宜人，空气清新"
+        },
+        "多云": {
+            "夏季": "相对凉爽，避免酷暑",
+            "冬季": "阻挡冷风，体感较暖",
+            "春季": "温度适中，变化较多",
+            "秋季": "天高云淡，气候宜人"
+        },
+        "雨天": {
+            "夏季": "阵雨或暴雨，湿度大",
+            "冬季": "寒冷潮湿，需防寒",
+            "春季": "春雨绵绵，助长作物",
+            "秋季": "秋雨带凉，注意保湿"
+        },
+        "雪天": {
+            "夏季": "罕见，高山地区可能",
+            "冬季": "常见，需注意防寒除雪",
+            "春季": "春雪短暂，道路湿滑",
+            "秋季": "罕见，寒流来临前"
+        }
+    }
+
+    if weather_type in typical_conditions:
+        return typical_conditions[weather_type].get(season, "该季节典型的天气条件")
+    return "典型天气条件"
 
 def predict_temperature(temperatures: List[float], days_ahead: int) -> float:
     """预测未来的温度"""
